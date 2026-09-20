@@ -5,6 +5,7 @@ Raft state machine -- a "partition" cuts real socket traffic, and a
 """
 import os
 import sys
+import threading
 import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -277,6 +278,38 @@ def test_write_survives_two_sequential_leader_failures():
         cluster.stop()
 
 
+def test_concurrent_client_requests_each_get_their_own_result():
+    """Each ClientRequest handler must return the result of applying ITS
+    OWN entry, not whichever entry happened to be applied last. This is
+    easy to get wrong by caching a single "last apply result" on the
+    node: when several requests get batched into the same AppendEntries
+    round and their commit_index advances past all of them at once,
+    _apply_committed() applies every one of them before any waiting
+    client thread wakes up, so a single shared slot ends up holding only
+    the last entry's result -- and every earlier request reads that same
+    wrong value instead of its own."""
+    cluster = fresh_cluster(3)
+    cluster.start()
+    try:
+        cluster.leader(timeout=5)
+        expected = {f"k{i}": f"v{i}" for i in range(20)}
+        results = {}
+
+        def submit(key, value):
+            results[key] = cluster.submit(("SET", key, value))
+
+        threads = [threading.Thread(target=submit, args=(k, v)) for k, v in expected.items()]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert results == expected, f"mismatches: {[(k, results.get(k), v) for k, v in expected.items() if results.get(k) != v]}"
+        print("test_concurrent_client_requests_each_get_their_own_result passed")
+    finally:
+        cluster.stop()
+
+
 if __name__ == "__main__":
     test_leader_election_and_basic_replication()
     test_exactly_one_leader_per_term()
@@ -286,4 +319,5 @@ if __name__ == "__main__":
     test_prevote_stops_an_isolated_node_from_disrupting_the_leader()
     test_log_compaction_and_snapshot_transfer_to_lagging_node()
     test_write_survives_two_sequential_leader_failures()
+    test_concurrent_client_requests_each_get_their_own_result()
     print("\nALL RAFT INTEGRATION TESTS PASSED")
