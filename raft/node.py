@@ -58,7 +58,7 @@ class RaftNode:
 
         self.commit_index = 0
         self.last_applied = 0
-        self._last_apply_result = None
+        self._apply_results = {}  # log index -> apply_callback's result, until the waiting client request consumes it
 
         self.next_index = {}
         self.match_index = {}
@@ -298,7 +298,7 @@ class RaftNode:
             self.last_applied += 1
             entry = self.log.get(self.last_applied)
             if entry is not None:
-                self._last_apply_result = self.apply_callback(entry.command)
+                self._apply_results[self.last_applied] = self.apply_callback(entry.command)
         self.cv.notify_all()
 
     # ---- log compaction ----
@@ -463,7 +463,7 @@ class RaftNode:
                 if remaining <= 0:
                     return {"success": False, "error": "timed out waiting for commit"}
                 self.cv.wait(timeout=remaining)
-            return {"success": True, "result": self._last_apply_result}
+            return {"success": True, "result": self._apply_results.pop(my_index, None)}
 
     # ---- introspection (for tests/demo only, not part of the protocol) ----
 
